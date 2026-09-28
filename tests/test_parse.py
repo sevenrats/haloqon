@@ -91,6 +91,31 @@ def test_register_password_payload():
     assert (p[7] >> 4) == 4  # pin digit count
 
 
+def test_set_latch_payload():
+    assert parse.set_latch_payload(parse.DIRECTION_LEFT) == b"\x00"
+    assert parse.set_latch_payload(parse.DIRECTION_RIGHT) == b"\x01"
+
+
+def test_set_latch_payload_rejects_bad_value():
+    import pytest
+
+    with pytest.raises(ValueError):
+        parse.set_latch_payload(2)
+
+
+def test_parse_latch_direction():
+    # RES_GET_LATCH params: [status=0][direction]; direction is GetParam()[1].
+    assert parse.parse_latch_direction(bytes([0, parse.DIRECTION_LEFT])) == 0
+    assert parse.parse_latch_direction(bytes([0, parse.DIRECTION_RIGHT])) == 1
+
+
+def test_parse_latch_direction_short():
+    import pytest
+
+    with pytest.raises(ValueError):
+        parse.parse_latch_direction(bytes([0]))
+
+
 def test_enroll_empty_user_status():
     # ACK_EMPTY (5) in an enroll response means the target uid doesn't exist;
     # enroll_finger must fail eagerly rather than wait for a sensor touch.

@@ -80,6 +80,50 @@ def set_admin_cmd(ctx, code):
     _run(go())
 
 
+@main.command("get-direction")
+@click.option("--code", required=True, help="Admin/program code (digits).")
+@click.pass_context
+def get_direction_cmd(ctx, code):
+    """Read the lock direction / handedness (Bolt SE). Requires admin login."""
+    from .protocol.parse import DIRECTION_LEFT
+
+    addr = _need_address(ctx)
+
+    async def go():
+        async with LockTransport(addr, ctx.obj["adapter"], ctx.obj["debug"]) as t:
+            lock = Lock(t)
+            await lock.admin_login(code)
+            d = await lock.get_direction()
+            name = "left" if d == DIRECTION_LEFT else "right"
+            click.echo(f"Lock direction: {name} (raw={d})")
+
+    _run(go())
+
+
+@main.command("set-direction")
+@click.argument("direction", type=click.Choice(["left", "right"]))
+@click.option("--code", required=True, help="Admin/program code (digits).")
+@click.pass_context
+def set_direction_cmd(ctx, direction, code):
+    """Set the lock direction / handedness (Bolt SE). Requires admin login.
+
+    Use `left` for a left-hand door. Requires admin login.
+    """
+    from .protocol.parse import DIRECTION_LEFT, DIRECTION_RIGHT
+
+    addr = _need_address(ctx)
+    value = DIRECTION_LEFT if direction == "left" else DIRECTION_RIGHT
+
+    async def go():
+        async with LockTransport(addr, ctx.obj["adapter"], ctx.obj["debug"]) as t:
+            lock = Lock(t)
+            await lock.admin_login(code)
+            await lock.set_direction(value)
+            click.echo(f"Lock direction set to {direction}.")
+
+    _run(go())
+
+
 @main.command("list-users")
 @click.option("--code", required=True, help="Admin/program code (digits).")
 @click.pass_context

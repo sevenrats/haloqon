@@ -55,6 +55,27 @@ class Lock:
         if f.status != Ack.SUCCESS:
             raise LockError(f"add-user failed (status {f.status}).")
 
+    async def get_direction(self) -> int:
+        """Read the lock/latch direction (handedness). Requires admin login.
+
+        Sends REQ_GET_LATCH (88); parses the direction byte from RES_GET_LATCH.
+        Returns 0 (left) or 1 (right) — parse.DIRECTION_LEFT / DIRECTION_RIGHT.
+        """
+        f = await self.t.request(Cmd.GET_LATCH)
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"get-direction failed (status {f.status}).")
+        return parse.parse_latch_direction(f.params)
+
+    async def set_direction(self, direction: int) -> None:
+        """Set the lock/latch direction (handedness). Requires admin login.
+
+        Sends REQ_SET_LATCH (87) with a single direction byte (0 = left,
+        1 = right) and checks the RES_SET_LATCH status.
+        """
+        f = await self.t.request(Cmd.SET_LATCH, parse.set_latch_payload(direction))
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"set-direction failed (status {f.status}).")
+
     async def list_users(self, count: int | None = None) -> list[parse.UserRecord]:
         """Enumerate password users.
 

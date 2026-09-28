@@ -39,12 +39,18 @@ class TransportError(Exception):
     pass
 
 
+_NAME_HINTS = ("latch", "bolt", "u-bolt", "ubolt", "ultraloq", "ul3", "ul1")
+
+
 async def scan(timeout: float = 8.0) -> list[tuple[str, str]]:
-    """Return [(address, name), …] for advertising U-tec locks."""
+    """Return [(address, name), …] for advertising U-tec / Ultraloq locks."""
     devices = await BleakScanner.discover(timeout=timeout)
     found = []
     for d in devices:
-        if d.name and ("Latch" in d.name or d.name.startswith("U")):
+        if not d.name:
+            continue
+        n = d.name.lower()
+        if n.startswith("u") or any(h in n for h in _NAME_HINTS):
             found.append((d.address, d.name))
     return found
 

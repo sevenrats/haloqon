@@ -24,6 +24,10 @@ class Cmd(IntEnum):
     REGISTER_ID_FOB = 55
     DISABLE_ENABLE = 63
 
+    # Settings — latch/lock direction (handedness), Bolt/UBolt series
+    SET_LATCH = 87  # REQ_SET_LATCH (tcb_base.CommCmd), payload = 1 direction byte
+    GET_LATCH = 88  # REQ_GET_LATCH, no payload
+
     # Enumeration / reads
     READ_IDFP_COUNT = 72
     READ_ALL_IDPWD = 73

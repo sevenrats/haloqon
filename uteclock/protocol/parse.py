@@ -64,6 +64,37 @@ def read_all_idpwd_payload(uid: int = 0) -> bytes:
     return uid.to_bytes(4, "little")
 
 
+# Lock/latch direction (handedness). From DirectionLockActivity.notifyChangeCheck():
+# directionStatus == 0 -> left checkbox, else right. For model "Bolt" (Bolt SE /
+# DeviceLockBoltF6Matter) the app does NOT invert between UI and wire — the byte on
+# the wire is this value directly (the invert branch is only Bolt-F-Matter/Bolt-M/
+# BOLTMISSIONWIFI).
+DIRECTION_LEFT = 0
+DIRECTION_RIGHT = 1
+
+
+def set_latch_payload(direction: int) -> bytes:
+    """REQ_SET_LATCH (cmd 87): a single direction byte (0 = left, 1 = right).
+
+    ModuleLockSettingUBolt.set_latch appends one byte (the Java `char` cast to a
+    byte) after the command.
+    """
+    if direction not in (DIRECTION_LEFT, DIRECTION_RIGHT):
+        raise ValueError("direction must be 0 (left) or 1 (right)")
+    return bytes([direction & 0xFF])
+
+
+def parse_latch_direction(params: bytes) -> int:
+    """Parse RES_GET_LATCH (216): direction byte is GetParam()[1] == params[1].
+
+    params[0] is the status byte (already checked SUCCESS by the caller); the
+    direction value sits at index 1.
+    """
+    if len(params) < 2:
+        raise ValueError("RES_GET_LATCH too short to contain a direction byte")
+    return params[1]
+
+
 # --- response parsers ---------------------------------------------------------
 
 @dataclass
