@@ -3,9 +3,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from uteclock.crypto import secp128r1 as S
-from uteclock.crypto import microecc_pack as P
-from uteclock.crypto import aes
+from haloqon.crypto import secp128r1 as S
+from haloqon.crypto import microecc_pack as P
+from haloqon.crypto import aes
 
 
 def test_curve_params_standard_secp128r1():

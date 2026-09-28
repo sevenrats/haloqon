@@ -1,4 +1,4 @@
-"""uteclock command-line interface."""
+"""haloqon command-line interface."""
 
 from __future__ import annotations
 

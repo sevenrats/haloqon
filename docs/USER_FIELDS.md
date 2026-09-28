@@ -5,7 +5,7 @@ the `onReadPwd`/`onReadFinCrc` sync handlers, and the TCB command table). This
 separates fields the **lock actually stores and returns over BLE** from fields
 that live only in **U-tec's cloud / the app** and are never on the lock.
 
-## On-lock fields (readable/writable over BLE — what uteclock can expose)
+## On-lock fields (readable/writable over BLE — what haloqon can expose)
 
 From the `RES_READ_ALL_IDPWD` (201) record, offsets relative to the status byte:
 
@@ -61,14 +61,14 @@ U-tec's cloud API keyed by uid, and are unavailable to a local-only tool:
   — the app's user-sharing/guest system (cloud-mediated)
 - `tag1`, `tag2`, `message`, `address`, `ptype` — app bookkeeping
 
-## Implication for uteclock
+## Implication for haloqon
 
 A local BLE tool can expose: **uid, pin, user_type/role (normal/admin),
 enabled flags, which credentials exist (pin/finger/card/fob counts + finger CRC),
 and per-user schedules.** It **cannot** expose name/email/phone/photo/sharing —
 those exist only in U-tec's cloud and would require logging into their account
 API, which defeats the local-only goal. If you want names, the practical option
-is to keep a local uid→name mapping in uteclock itself.
+is to keep a local uid→name mapping in haloqon itself.
 
 ## BLE vs. Matter user/credential spaces (confirmed on hardware)
 
@@ -84,5 +84,5 @@ These are separate address spaces on this lock:
   only Matter BLE commands are global enable/mode toggles).
 
 Net: manage **PINs via Matter/HA** (attributable to users); manage **fingerprints
-via uteclock over BLE** (functional, but invisible to Matter). This is a
-firmware/spec boundary, not a uteclock limitation.
+via haloqon over BLE** (functional, but invisible to Matter). This is a
+firmware/spec boundary, not a haloqon limitation.

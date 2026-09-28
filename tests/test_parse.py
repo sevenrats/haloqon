@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from uteclock.protocol import parse
+from haloqon.protocol import parse
 
 
 def test_admin_login_payload_packing():
@@ -65,7 +65,7 @@ def test_parse_enroll_progress():
 
 
 def test_admin_verify_payload():
-    from uteclock.protocol import parse as P
+    from haloqon.protocol import parse as P
     p = P.admin_verify_payload("654321")
     assert len(p) == 8
     assert int.from_bytes(p[:4], "little") == 0xF0000000  # LOCK_ADMIN_UID
@@ -73,7 +73,7 @@ def test_admin_verify_payload():
 
 
 def test_parse_counts():
-    from uteclock.protocol import parse as P
+    from haloqon.protocol import parse as P
     params = bytearray(5)
     params[0] = 0
     params[1:3] = (2).to_bytes(2, "little")
@@ -83,7 +83,7 @@ def test_parse_counts():
 
 
 def test_register_password_payload():
-    from uteclock.protocol import parse as P
+    from haloqon.protocol import parse as P
     p = P.register_password_payload(uid=11, pin="1234", user_type=1)
     assert len(p) == 12
     assert int.from_bytes(p[:4], "little") == 11
@@ -119,6 +119,6 @@ def test_parse_latch_direction_short():
 def test_enroll_empty_user_status():
     # ACK_EMPTY (5) in an enroll response means the target uid doesn't exist;
     # enroll_finger must fail eagerly rather than wait for a sensor touch.
-    from uteclock.protocol import parse
+    from haloqon.protocol import parse
     pr = parse.parse_enroll_progress(bytes([5]))
     assert pr.status == 5

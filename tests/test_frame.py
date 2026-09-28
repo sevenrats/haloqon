@@ -3,9 +3,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from uteclock.protocol import frame
-from uteclock.protocol.commands import Cmd
-from uteclock.protocol import parse
+from haloqon.protocol import frame
+from haloqon.protocol.commands import Cmd
+from haloqon.protocol import parse
 
 
 def test_crc8_table_head():
