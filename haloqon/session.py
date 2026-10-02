@@ -6,12 +6,20 @@ import asyncio
 from collections.abc import AsyncIterator
 
 from .ble.transport import LockTransport
-from .protocol import parse
+from .protocol import frame, parse
 from .protocol.commands import Ack, Cmd
 
 
 class LockError(Exception):
     pass
+
+
+class NotImplementedOnDevice(LockError):
+    """The command's opcode is handled by the firmware, but this model reports
+    it has nothing to act on (ACK_EMPTY) — i.e. the feature is compiled in but
+    is a no-op on this device (e.g. a HomeKit-provisioning command on a
+    Matter/non-HomeKit unit). Distinct from a wrong payload or missing auth.
+    """
 
 
 class Lock:
@@ -75,6 +83,301 @@ class Lock:
         f = await self.t.request(Cmd.SET_LATCH, parse.set_latch_payload(direction))
         if f.status != Ack.SUCCESS:
             raise LockError(f"set-direction failed (status {f.status}).")
+
+    async def set_ble_name(self, name: str) -> frame.Frame:
+        """Set the BLE-advertised device name (cmd 0x69). EXPERIMENTAL.
+
+        This opcode (REQ_SET_HOMEKIT_BLE_NAME) is defined in the app but never
+        invoked, so both the payload shape and the authority requirement are
+        unverified. We admit login is a good idea (do it before calling this),
+        but we do NOT assume a particular ACK code: the app's RES_* constant for
+        this command is 0x21, which does NOT follow the usual `req | 0x80` rule,
+        so the transport's request() matcher (which expects 0xE9) can't be
+        trusted here. Instead we send and return the FIRST frame that comes back
+        (matching either 0xE9 or 0x21), or raise on timeout, so the caller can
+        inspect whatever the firmware actually replies.
+        """
+        await self.t.send(Cmd.SET_HOMEKIT_BLE_NAME, parse.set_ble_name_payload(name))
+        expected = {Cmd.SET_HOMEKIT_BLE_NAME | 0x80, 0x21}
+        deadline = asyncio.get_event_loop().time() + 10.0
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise LockError(
+                    "no response to set-ble-name (cmd 0x69). The firmware may not "
+                    "implement this opcode, or may only accept it in a factory "
+                    "provisioning mode that isn't reachable post-sale."
+                )
+            f = await self.t.next_frame(timeout=remaining)
+            if f.cmd in expected:
+                if f.status == Ack.EMPTY:
+                    raise NotImplementedOnDevice(
+                        "set-ble-name: the firmware handled cmd 0x69 but returned "
+                        "EMPTY — this HomeKit-provisioning command is a no-op on "
+                        "this model (a Matter/non-HomeKit unit). Not a payload or "
+                        "auth problem; the feature simply isn't active on this device."
+                    )
+                if f.status not in (Ack.SUCCESS, -1):
+                    raise LockError(
+                        f"set-ble-name rejected (cmd 0x{f.cmd:02x}, status {f.status}). "
+                        "The opcode exists but the payload or authority was wrong."
+                    )
+                return f
+            # ignore unsolicited broadcasts (lock status/log) while we wait
+
+    async def unlock(self, code: str, *, relock: bool = False) -> None:
+        """Unlock the lock (REQ_UNLOCK=85). Requires admin login with `code`.
+
+        Authenticates as the admin user (uid F0000000, pwd = admin code). Set
+        relock=True to have the lock re-lock after its auto-lock window.
+        """
+        f = await self.t.request(Cmd.UNLOCK, parse.unlock_payload(code, relock=relock))
+        if f.status == Ack.SUCCESS:
+            return
+        if f.status == Ack.BACKLOCK:
+            raise LockError("unlock refused: lock is in back-lock (privacy) mode.")
+        raise LockError(f"unlock failed (status {f.status}).")
+
+    async def lock(self, code: str) -> None:
+        """Throw the bolt / lock the lock (REQ_BOLTLOCK=86). Requires admin login."""
+        f = await self.t.request(Cmd.BOLTLOCK, parse.bolt_lock_payload(code))
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"lock failed (status {f.status}).")
+
+    async def status(self) -> parse.LockStatus:
+        """Read lock/bolt status + battery (REQ_LOCK_STATUS=80). Requires admin login."""
+        f = await self.t.request(Cmd.LOCK_STATUS)
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"status read failed (status {f.status}).")
+        return parse.parse_lock_status(f.params)
+
+    # --- per-user access schedules (104-111) ---------------------------------
+
+    # A schedule read returns one of these "not set" statuses when the user has
+    # no such schedule (or no such user) — a normal outcome, not a fault. The app
+    # shows it as "no schedule". We map it to None; anything else raises.
+    _SCHEDULE_UNSET = (Ack.FAIL, Ack.EMPTY)
+
+    def _schedule_unset(self, f: frame.Frame, what: str) -> bool:
+        if f.status == Ack.SUCCESS:
+            return False
+        if f.status in self._SCHEDULE_UNSET:
+            return True
+        raise LockError(f"get-schedule-{what} failed (status {f.status}).")
+
+    async def get_schedule_week(self, uid: int) -> int | None:
+        """Read a user's allowed-weekday bitmask, or None if not set (cmd 104)."""
+        f = await self.t.request(Cmd.GET_SCHEDULE_WEEK, parse.get_schedule_payload(uid))
+        if self._schedule_unset(f, "week"):
+            return None
+        return parse.parse_schedule_week(f.params)
+
+    async def set_schedule_week(self, uid: int, weekday_mask: int) -> None:
+        """Set a user's allowed-weekday bitmask (REQ_SET_SCHEDULE_WEEK=105).
+
+        Bit 0 = Sunday .. bit 6 = Saturday (low 7 bits).
+        """
+        f = await self.t.request(
+            Cmd.SET_SCHEDULE_WEEK, parse.set_schedule_week_payload(uid, weekday_mask)
+        )
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"set-schedule-week failed (status {f.status}).")
+
+    async def get_schedule_time(self, uid: int) -> parse.ScheduleTime | None:
+        """Read a user's daily allowed time window, or None if not set (cmd 106)."""
+        f = await self.t.request(Cmd.GET_SCHEDULE_TIME, parse.get_schedule_payload(uid))
+        if self._schedule_unset(f, "time"):
+            return None
+        return parse.parse_schedule_time(f.params)
+
+    async def set_schedule_time(
+        self, uid: int, start_h: int, start_m: int, end_h: int, end_m: int
+    ) -> None:
+        """Set a user's daily allowed time window (REQ_SET_SCHEDULE_TIME=107)."""
+        f = await self.t.request(
+            Cmd.SET_SCHEDULE_TIME,
+            parse.set_schedule_time_payload(uid, start_h, start_m, end_h, end_m),
+        )
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"set-schedule-time failed (status {f.status}).")
+
+    async def get_schedule_date(self, uid: int) -> parse.ScheduleDate | None:
+        """Read a user's valid date range, or None if not set (cmd 108)."""
+        f = await self.t.request(Cmd.GET_SCHEDULE_DATE, parse.get_schedule_payload(uid))
+        if self._schedule_unset(f, "date"):
+            return None
+        return parse.parse_schedule_date(f.params)
+
+    async def set_schedule_date(
+        self, uid: int, start, end, times=None
+    ) -> None:
+        """Set a user's valid date range (REQ_SET_SCHEDULE_DATE=109).
+
+        `start`/`end` are datetime.date. On _34 firmware (this lock) the app also
+        appends a (start_h, start_m, end_h, end_m) tuple; pass `times` to match.
+        """
+        f = await self.t.request(
+            Cmd.SET_SCHEDULE_DATE, parse.set_schedule_date_payload(uid, start, end, times)
+        )
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"set-schedule-date failed (status {f.status}).")
+
+    async def get_schedule_num(self, uid: int) -> parse.ScheduleNum | None:
+        """Read a user's schedule slot usage, or None if not set (cmd 110)."""
+        f = await self.t.request(Cmd.GET_SCHEDULE_NUM, parse.get_schedule_payload(uid))
+        if self._schedule_unset(f, "num"):
+            return None
+        return parse.parse_schedule_num(f.params)
+
+    async def set_schedule_num(self, uid: int, num: int) -> None:
+        """Set a user's schedule number/slot (REQ_SET_SCHEDULE_NUM=111)."""
+        f = await self.t.request(
+            Cmd.SET_SCHEDULE_NUM, parse.set_schedule_num_payload(uid, num)
+        )
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"set-schedule-num failed (status {f.status}).")
+
+    async def get_autolock(self) -> int:
+        """Read the auto-lock time in seconds (REQ_GET_AUTOLOCK=90)."""
+        f = await self.t.request(Cmd.GET_AUTOLOCK)
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"get-autolock failed (status {f.status}).")
+        return parse.parse_autolock(f.params)
+
+    async def set_autolock(self, seconds: int, *, relock: bool = False) -> None:
+        """Set the auto-lock time in seconds (REQ_SET_AUTOLOCK=89)."""
+        f = await self.t.request(
+            Cmd.SET_AUTOLOCK, parse.set_autolock_payload(seconds, relock)
+        )
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"set-autolock failed (status {f.status}).")
+
+    async def get_mute(self) -> bool:
+        """Read mute state — True if muted (REQ_LOCK_GETMUTE=83)."""
+        f = await self.t.request(Cmd.LOCK_GETMUTE)
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"get-mute failed (status {f.status}).")
+        return parse.parse_mute(f.params)
+
+    async def set_mute(self, muted: bool) -> None:
+        """Mute or unmute the lock's sounds (REQ_LOCK_SETMUTE=84)."""
+        f = await self.t.request(Cmd.LOCK_SETMUTE, parse.set_mute_payload(muted))
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"set-mute failed (status {f.status}).")
+
+    async def delete_user(self, uid: int) -> None:
+        """Delete a user and its credentials (REQ_ADMIN_DEL_PSWFP=60).
+
+        Requires admin login. The lock treats deleting a nonexistent user as
+        EMPTY, which the app accepts as success — we do the same.
+        """
+        f = await self.t.request(Cmd.ADMIN_DEL_PSWFP, parse.delete_user_payload(uid))
+        if f.status in (Ack.SUCCESS, Ack.EMPTY):
+            return
+        raise LockError(f"delete-user failed (status {f.status}).")
+
+    async def set_user_enabled(
+        self, uid: int, enabled: bool, *, is_admin: bool = False
+    ) -> None:
+        """Enable or disable a user (REQ_DISABLE_ENABLE=63). Requires admin login."""
+        state = parse.USER_ENABLE if enabled else parse.USER_DISABLE
+        f = await self.t.request(
+            Cmd.DISABLE_ENABLE, parse.disable_enable_payload(uid, state, is_admin)
+        )
+        if f.status != Ack.SUCCESS:
+            raise LockError(
+                f"{'enable' if enabled else 'disable'}-user failed (status {f.status})."
+            )
+
+    async def battery(self) -> int:
+        """Read battery level % (REQ_READ_PLEVEL=67). Requires admin login.
+
+        The lock answers on RES 195 (== 67|0x80, standard — confirmed live).
+        """
+        f = await self.t.request(Cmd.READ_PLEVEL)
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"battery read failed (status {f.status}).")
+        return parse.parse_battery(f.params)
+
+    async def firmware_version(self) -> str:
+        """Read the firmware version string (REQ_FIRMWARE_VERSION=93)."""
+        f = await self.t.request(Cmd.FIRMWARE_VERSION)
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"firmware-version read failed (status {f.status}).")
+        return parse.parse_firmware_version(f.params)
+
+    async def serial(self) -> str:
+        """Read the lock serial number (REQ_READ_LOCK_SN=94)."""
+        f = await self.t.request(Cmd.READ_LOCK_SN, parse.read_sn_payload())
+        if f.status != Ack.SUCCESS:
+            raise LockError(f"serial read failed (status {f.status}).")
+        return parse.parse_serial(f.params)
+
+    async def read_logs(
+        self,
+        since=None,
+        max_records: int = 200,
+        page: int = 10,
+    ) -> list[parse.LogRecord]:
+        """Read the lock's event log, newest-first (REQ_READ_LOG_BY_TIME=79).
+
+        Requires admin login. Starts at `since` (a datetime; defaults to now)
+        and reads backward in pages of `page` records, feeding the oldest
+        record's timestamp back as the next page's start, until the lock
+        reports EMPTY, a record's own count reaches 1 (the app's last-record
+        signal), we stop making progress, or we hit `max_records`.
+        """
+        import datetime as _dt
+
+        if since is None:
+            since = _dt.datetime.now()
+        out: list[parse.LogRecord] = []
+        expected = Cmd.READ_LOG_BY_TIME | 0x80
+        seen: set[tuple[int, int]] = set()  # (index, packed-ish) de-dup guard
+        cursor = since
+        done = False
+        while not done and len(out) < max_records:
+            await self.t.send(
+                Cmd.READ_LOG_BY_TIME,
+                parse.read_log_payload(cursor, parse.LOG_READ_BACKWARD, page),
+            )
+            got_this_page = 0
+            while True:
+                try:
+                    f = await self.t.next_frame(timeout=10.0)
+                except asyncio.TimeoutError:
+                    done = True
+                    break
+                if f.cmd != expected:
+                    continue
+                if f.status == Ack.EMPTY:
+                    done = True
+                    break
+                rec = parse.parse_log_record(f.params)
+                if rec is None:
+                    done = True
+                    break
+                key = (rec.index, rec.type_byte)
+                if key in seen:
+                    # already have this record; the page didn't advance -> stop
+                    done = True
+                    break
+                seen.add(key)
+                out.append(rec)
+                got_this_page += 1
+                if rec.time is not None:
+                    cursor = rec.time - _dt.timedelta(seconds=1)
+                if rec.remaining <= 1:  # app treats count==1 as the last record
+                    done = True
+                    break
+                if len(out) >= max_records:
+                    done = True
+                    break
+                if got_this_page >= page:
+                    break  # page complete; issue the next request
+            if got_this_page == 0:
+                done = True
+        return out
 
     async def list_users(self, count: int | None = None) -> list[parse.UserRecord]:
         """Enumerate password users.
